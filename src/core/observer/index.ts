@@ -123,41 +123,44 @@ export function observe(
 }
 
 /**
- * Define a reactive property on an Object.
+ * 在对象上定义一个响应式属性。
  */
 export function defineReactive(
-  obj: object,
-  key: string,
-  val?: any,
-  customSetter?: Function | null,
-  shallow?: boolean,
-  mock?: boolean,
-  observeEvenIfShallow = false
+  obj: object,  //要做响应式的数据源对象
+  key: string,  //要转为响应式的属性名
+  val?: any,    //属性的初始化
+  customSetter?: Function | null, //开发环境下的自定义setter用于警告
+  shallow?: boolean,  //是否浅层响应式
+  mock?: boolean, //是否在SSR或mock场景使用
+  observeEvenIfShallow = false //强制observe
 ) {
-  const dep = new Dep()
+  const dep = new Dep() //为该属性创建依赖收集容器
 
   const property = Object.getOwnPropertyDescriptor(obj, key)
   if (property && property.configurable === false) {
+    //如果属性不可配置，则无法使用defineReactive，比如freeze
     return
   }
 
-  // cater for pre-defined getter/setters
+  // 保存原本 getter 和 setter（用户自行定义的 accessor）
   const getter = property && property.get
   const setter = property && property.set
+  //如果没有用户getter，或者存在setter且没有显式val传入，则使用当前obj[key]
   if (
     (!getter || setter) &&
     (val === NO_INITIAL_VALUE || arguments.length === 2)
   ) {
-    val = obj[key]
+    val = obj[key]    //默认初始值
   }
-
+  //childOb就是val的observe实例（如果val是对象）
   let childOb = shallow ? val && val.__ob__ : observe(val, false, mock)
+  //核心：劫持obj[key],使用自定义getter/setter替代原本行为
   Object.defineProperty(obj, key, {
     enumerable: true,
     configurable: true,
     get: function reactiveGetter() {
-      const value = getter ? getter.call(obj) : val
-      if (Dep.target) {
+      const value = getter ? getter.call(obj) : val //执行原getter或使用val
+      if (Dep.target) { // Dep.target 是当前正在执行的 watcher
         if (__DEV__) {
           dep.depend({
             target: obj,
@@ -168,33 +171,37 @@ export function defineReactive(
           dep.depend()
         }
         if (childOb) {
-          childOb.dep.depend()
-          if (isArray(value)) {
-            dependArray(value)
+          childOb.dep.depend()  // 对象类型还要对自身的 Ob 收集依赖
+          if (isArray(value)) { // 如果 value 是数组，还需要为数组里的对象收集
+            dependArray(value) 
           }
         }
       }
+      // ref 解包逻辑
       return isRef(value) && !shallow ? value.value : value
     },
     set: function reactiveSetter(newVal) {
       const value = getter ? getter.call(obj) : val
+       // 如果值没有变化（===），则直接 return
       if (!hasChanged(value, newVal)) {
         return
       }
       if (__DEV__ && customSetter) {
-        customSetter()
+        customSetter()  // 开发环境的警告逻辑
       }
       if (setter) {
-        setter.call(obj, newVal)
+        setter.call(obj, newVal) // 调用用户原来的 setter
       } else if (getter) {
-        // #7981: for accessor properties without setter
+        // #7981:  只有 getter 无 setter 时不可写
         return
       } else if (!shallow && isRef(value) && !isRef(newVal)) {
+        // 处理 ref：ref.value = newVal
         value.value = newVal
         return
       } else {
-        val = newVal
+        val = newVal // 简单赋值
       }
+      // 递归 observe 新值（如果是对象）
       childOb = shallow ? newVal && newVal.__ob__ : observe(newVal, false, mock)
       if (__DEV__) {
         dep.notify({
@@ -205,6 +212,7 @@ export function defineReactive(
           oldValue: value
         })
       } else {
+        // 派发更新（执行所有 watcher.update）
         dep.notify()
       }
     }
