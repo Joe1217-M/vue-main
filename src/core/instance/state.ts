@@ -339,17 +339,20 @@ function createWatcher(
 }
 
 export function stateMixin(Vue: typeof Component) {
-  // flow somehow has problems with directly declared definition object
-  // when using Object.defineProperty, so we have to procedurally build up
-  // the object here.
+  // 构造描述符对象，因为 flow 对 defineProperty 的直接写法有问题
   const dataDef: any = {}
   dataDef.get = function () {
+    // 访问 vm.$data 时返回 vm._data
     return this._data
   }
+
   const propsDef: any = {}
   propsDef.get = function () {
+    // 访问 vm.$props 时返回 vm._props
     return this._props
   }
+
+  // 开发环境下，禁止用户给 $data / $props 赋值
   if (__DEV__) {
     dataDef.set = function () {
       warn(
@@ -362,32 +365,54 @@ export function stateMixin(Vue: typeof Component) {
       warn(`$props is readonly.`, this)
     }
   }
+
+  // 定义 $data 和 $props 的 getter（几乎 readonly）
   Object.defineProperty(Vue.prototype, '$data', dataDef)
   Object.defineProperty(Vue.prototype, '$props', propsDef)
 
+  // 将 set/delete API 挂到 Vue.prototype 上（来自 observer/index）
   Vue.prototype.$set = set
   Vue.prototype.$delete = del
 
+  /**
+   * 实现 vm.$watch(expOrFn, cb, options)
+   * expOrFn：字符串路径或函数
+   * cb：回调
+   * options：配置项 { immediate, deep 等 }
+   */
   Vue.prototype.$watch = function (
     expOrFn: string | (() => any),
     cb: any,
     options?: Record<string, any>
   ): Function {
     const vm: Component = this
+
+    // 如果第二个参数 cb 是对象，则调用 createWatcher (支持 { handler, deep, immediate })
     if (isPlainObject(cb)) {
       return createWatcher(vm, expOrFn, cb, options)
     }
+
+    // 否则，普通 watcher
     options = options || {}
-    options.user = true
+    options.user = true  // 表示用户 watcher（不是渲染 watcher）
+
+    // 创建 Watcher 实例（核心：会执行 getter 收集依赖）
     const watcher = new Watcher(vm, expOrFn, cb, options)
+
+    // 如果 immediate: true，则立即执行一次回调
     if (options.immediate) {
       const info = `callback for immediate watcher "${watcher.expression}"`
+
+      // 手动 pushTarget/popTarget，模拟依赖收集环境（避免污染 Dep.target）
       pushTarget()
       invokeWithErrorHandling(cb, vm, [watcher.value], vm, info)
       popTarget()
     }
+
+    // 返回 unwatch 函数，用于停止观察
     return function unwatchFn() {
-      watcher.teardown()
+      watcher.teardown() // 从所有 dep 中移除自己
     }
   }
 }
+

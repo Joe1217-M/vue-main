@@ -60,30 +60,53 @@ export function initLifecycle(vm: Component) {
 }
 
 export function lifecycleMixin(Vue: typeof Component) {
+  /**
+   * Vue 实例的核心更新方法：
+   * - 初次渲染：把虚拟 DOM 渲染成真实 DOM，挂载到 vm.$el
+   * - 更新渲染：对比新旧虚拟 DOM（diff），按需更新真实 DOM
+   */
   Vue.prototype._update = function (vnode: VNode, hydrating?: boolean) {
     const vm: Component = this
-    const prevEl = vm.$el
-    const prevVnode = vm._vnode
+    const prevEl = vm.$el               // 记录旧的真实 DOM
+    const prevVnode = vm._vnode        // 记录旧的虚拟 DOM
+
+    // 设置当前活跃实例（用于处理 keep-alive、slot 等）
     const restoreActiveInstance = setActiveInstance(vm)
+
+    // 保存新的虚拟节点
     vm._vnode = vnode
-    // Vue.prototype.__patch__ is injected in entry points
-    // based on the rendering backend used.
+
+    /**
+     * __patch__ 是平台相关的渲染方法：
+     * - 浏览器：使用 snabbdom patch 真实 DOM
+     * - SSR：使用其它实现
+     */
+
     if (!prevVnode) {
-      // initial render
-      vm.$el = vm.__patch__(vm.$el, vnode, hydrating, false /* removeOnly */)
+      // 如果没有旧虚拟 DOM → 首次渲染
+      vm.$el = vm.__patch__(vm.$el, vnode, hydrating, false)
     } else {
-      // updates
+      // diff 更新：把 prevVnode → vnode 的变化同步到真实 DOM
       vm.$el = vm.__patch__(prevVnode, vnode)
     }
+
+    // 恢复上一个 activeInstance
     restoreActiveInstance()
-    // update __vue__ reference
+
+    // 清理旧 DOM 上的 __vue__ 引用（防止内存泄漏）
     if (prevEl) {
       prevEl.__vue__ = null
     }
+
+    // 新 DOM 设置 __vue__ 指向当前实例
     if (vm.$el) {
       vm.$el.__vue__ = vm
     }
-    // if parent is an HOC, update its $el as well
+
+    /**
+     * 如果组件包装了父组件（高阶组件 HOC）
+     * 那么需要同步更新父组件的 $el，使其指向最新 DOM
+     */
     let wrapper: Component | undefined = vm
     while (
       wrapper &&
@@ -94,10 +117,14 @@ export function lifecycleMixin(Vue: typeof Component) {
       wrapper.$parent.$el = wrapper.$el
       wrapper = wrapper.$parent
     }
-    // updated hook is called by the scheduler to ensure that children are
-    // updated in a parent's updated hook.
+
+    // 注意：updated 钩子在调度器中调用，以确保子组件在父组件 updated 之后调用
   }
 
+  /**
+   * 强制更新组件（很少用）
+   * - 通常用于无法被 Vue 监听的数据变更
+   */
   Vue.prototype.$forceUpdate = function () {
     const vm: Component = this
     if (vm._watcher) {
@@ -105,44 +132,67 @@ export function lifecycleMixin(Vue: typeof Component) {
     }
   }
 
+  /**
+   * 销毁当前组件实例：
+   * - 触发生命周期钩子
+   * - 移除 watcher
+   * - 从父组件中移除
+   * - 清理 DOM
+   * - 解除循环引用
+   */
   Vue.prototype.$destroy = function () {
     const vm: Component = this
+
     if (vm._isBeingDestroyed) {
       return
     }
+
+    // beforeDestroy 钩子
     callHook(vm, 'beforeDestroy')
     vm._isBeingDestroyed = true
-    // remove self from parent
+
+    // 从父组件中移除自己
     const parent = vm.$parent
     if (parent && !parent._isBeingDestroyed && !vm.$options.abstract) {
       remove(parent.$children, vm)
     }
-    // teardown scope. this includes both the render watcher and other
-    // watchers created
+
+    /**
+     * 停止所有 watcher：
+     * - render watcher
+     * - 用户 watcher（$watch）
+     * - 计算属性 watcher
+     */
     vm._scope.stop()
-    // remove reference from data ob
-    // frozen object may not have observer.
+
+    // 如果 data 有 observer，减少引用计数
     if (vm._data.__ob__) {
       vm._data.__ob__.vmCount--
     }
-    // call the last hook...
+
     vm._isDestroyed = true
-    // invoke destroy hooks on current rendered tree
+
+    // 销毁虚拟 DOM 树（会把 DOM 节点的事件等一并移除）
     vm.__patch__(vm._vnode, null)
-    // fire destroyed hook
+
+    // destroyed 钩子
     callHook(vm, 'destroyed')
-    // turn off all instance listeners.
+
+    // 移除事件监听
     vm.$off()
-    // remove __vue__ reference
+
+    // 清空 DOM 的 __vue__ 属性
     if (vm.$el) {
       vm.$el.__vue__ = null
     }
-    // release circular reference (#6759)
+
+    // 移除 $vnode 对父节点的引用（防止循环引用）
     if (vm.$vnode) {
       vm.$vnode.parent = null
     }
   }
 }
+
 
 export function mountComponent(
   vm: Component,
