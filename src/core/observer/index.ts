@@ -40,42 +40,55 @@ const mockDep = {
 } as Dep
 
 /**
- * Observer class that is attached to each observed
- * object. Once attached, the observer converts the target
- * object's property keys into getter/setters that
- * collect dependencies and dispatch updates.
- */
+* Observer 类 —— 每个被观测的对象都会被附加一个 Observer 实例。
+* 一旦对象被 Observer 转换，其所有属性都会变成 getter/setter，
+* 从而实现依赖收集（收集 Watcher）与派发更新（触发 watcher.update）。
+*/
 export class Observer {
-  dep: Dep
-  vmCount: number // number of vms that have this object as root $data
+  dep: Dep // 每个对象都有一个依赖收集器，用于数组依赖收集
+  vmCount: number // 有多少个 Vue 实例把该对象作为根数据 $data
+
 
   constructor(public value: any, public shallow = false, public mock = false) {
-    // this.value = value
+    // 为当前对象创建一个专用的依赖收集器（SSR mock 会复用 mockDep）
     this.dep = mock ? mockDep : new Dep()
     this.vmCount = 0
+
+
+    // 给 value 添加 __ob__ 属性，表示它已经是一个被观测的对象
     def(value, '__ob__', this)
+
+
+    // =========================
+    // 1. 如果 value 是数组
+    // =========================
     if (isArray(value)) {
+      // 非 mock 模式才会重写原型或复制数组方法
       if (!mock) {
+        // 如果环境支持 __proto__，直接改写数组原型
         if (hasProto) {
-          /* eslint-disable no-proto */
-          ;(value as any).__proto__ = arrayMethods
-          /* eslint-enable no-proto */
+          ; (value as any).__proto__ = arrayMethods
         } else {
+          // 如果不支持 proto，则把 arrayMethods 上的方法逐个挂到数组实例上
           for (let i = 0, l = arrayKeys.length; i < l; i++) {
             const key = arrayKeys[i]
             def(value, key, arrayMethods[key])
           }
         }
       }
+
+
+      // 如果不是 shallow 模式，则递归观察数组中的元素
       if (!shallow) {
         this.observeArray(value)
       }
+
+
+      // =========================
+      // 2. 如果 value 是对象
+      // =========================
     } else {
-      /**
-       * Walk through all properties and convert them into
-       * getter/setters. This method should only be called when
-       * value type is Object.
-       */
+      // 遍历对象的每个 key，并将其转换为响应式 getter/setter
       const keys = Object.keys(value)
       for (let i = 0; i < keys.length; i++) {
         const key = keys[i]
@@ -84,9 +97,10 @@ export class Observer {
     }
   }
 
+
   /**
-   * Observe a list of Array items.
-   */
+  * 遍历数组元素，对每一项执行 observe，使其也变成响应式
+  */
   observeArray(value: any[]) {
     for (let i = 0, l = value.length; i < l; i++) {
       observe(value[i], false, this.mock)
@@ -97,18 +111,33 @@ export class Observer {
 // helpers
 
 /**
- * Attempt to create an observer instance for a value,
- * returns the new observer if successfully observed,
- * or the existing observer if the value already has one.
- */
+* 尝试为某个值创建一个 Observer 实例（响应式观察者）
+* 如果该值已经拥有一个 Observer，则直接返回已有的 Observer
+* 否则根据条件创建新的 Observer
+*/
 export function observe(
   value: any,
   shallow?: boolean,
   ssrMockReactivity?: boolean
 ): Observer | void {
+  // ------------------------------
+  // 1. 如果 value 已经有 __ob__，并且是 Observer，则直接返回
+  // ------------------------------
   if (value && hasOwn(value, '__ob__') && value.__ob__ instanceof Observer) {
     return value.__ob__
   }
+
+
+  // ------------------------------
+  // 2. 满足以下条件才会创建新的 Observer：
+  // - shouldObserve === true（全局允许观察）
+  // - 不在服务端渲染，或 SSR mock 模式
+  // - value 是数组或纯对象
+  // - value 可扩展（非冻结）
+  // - value 没有标记跳过响应式 __v_skip
+  // - value 不是 ref
+  // - 不是 VNode
+  // ------------------------------
   if (
     shouldObserve &&
     (ssrMockReactivity || !isServerRendering()) &&
