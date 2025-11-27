@@ -118,6 +118,17 @@ export function createPatchFunction(backend) {
 
   let creatingElmInVPre = 0
 
+//   createElm
+//  ├─ createComponent?
+//  │    ├─ 是 → 创建组件实例并插入 DOM
+//  │    └─ 否 → 进入元素或文本处理
+//  ├─ tag 存在?
+//  │    ├─ 是 → 创建元素节点
+//  │    │    ├─ createChildren
+//  │    │    ├─ invokeCreateHooks
+//  │    │    └─ insert DOM
+//  │    └─ 否 → 处理注释 or 文本
+//  └─ insert DOM
   function createElm(
     vnode,
     insertedVnodeQueue,
@@ -185,44 +196,82 @@ export function createPatchFunction(backend) {
   }
 
   function createComponent(vnode, insertedVnodeQueue, parentElm, refElm) {
+    // vnode.data 是组件VNode的关键数据，其中包含生命周期hook、props、event listeners等
     let i = vnode.data
+
+    // 判断 vnode.data 是否存在（组件 VNode 才会有 data 字段）
     if (isDef(i)) {
+      // 判断是否是 keep-alive 组件重新激活的情况
       const isReactivated = isDef(vnode.componentInstance) && i.keepAlive
+
+      // 获取组件VNode中的hook对象，再取其中的 init 方法
+      // init hook 负责创建组件实例（new Vue(options)）
       if (isDef((i = i.hook)) && isDef((i = i.init))) {
+        // 执行 init 钩子，初始化组件实例
+        // 第二个参数 false 表示不是 ssr hydration 渲染
         i(vnode, false /* hydrating */)
       }
-      // after calling the init hook, if the vnode is a child component
-      // it should've created a child instance and mounted it. the child
-      // component also has set the placeholder vnode's elm.
-      // in that case we can just return the element and be done.
+
+      // 执行 init 之后，如果组件实例已经创建好了
+      // vnode.componentInstance 就会被设置为该实例
+      // 同时实例的 $el 已经挂载在 vnode.elm 上
       if (isDef(vnode.componentInstance)) {
+        // 初始化组件：调用组件内部 create 钩子，处理 ref
         initComponent(vnode, insertedVnodeQueue)
+
+        // 将组件根DOM插入父元素中
         insert(parentElm, vnode.elm, refElm)
+
+        // 如果 keep-alive 且是重新激活状态，执行激活逻辑
         if (isTrue(isReactivated)) {
           reactivateComponent(vnode, insertedVnodeQueue, parentElm, refElm)
         }
+
+        // 返回 true 表示这是一个组件 vnode，并且成功创建
         return true
       }
     }
   }
 
+  // 初始化组件 vnode，将 componentInstance.$el 作为 vnode.elm 挂载到 DOM 树中
   function initComponent(vnode, insertedVnodeQueue) {
+
+    // 如果当前 vnode.data.pendingInsert 存在，
+    // 表示在组件内部 create 过程中产生了一些待执行的 insert 钩子（比如 transition 动画）
     if (isDef(vnode.data.pendingInsert)) {
+
+      // 将 pendingInsert 中的钩子合并到 insertedVnodeQueue
       insertedVnodeQueue.push.apply(
         insertedVnodeQueue,
         vnode.data.pendingInsert
       )
+
+      // 清空 pendingInsert，避免重复执行
       vnode.data.pendingInsert = null
     }
+
+    // 将组件实例的根 DOM 节点($el) 赋给 vnode.elm
+    // $el 是组件最终渲染出来的真实 DOM 元素
     vnode.elm = vnode.componentInstance.$el
+
+    // 如果 vnode 是“可 patch”的（即不是注释/空节点）
     if (isPatchable(vnode)) {
+
+      // 调用 create 钩子(例如 directive、ref、attrs、class、style 模块)
+      // 相当于用于元素初始化阶段的 patch modules hooks
       invokeCreateHooks(vnode, insertedVnodeQueue)
+
+      // 设置 style scope（处理 scoped CSS），确保样式隔离正确
       setScope(vnode)
+
     } else {
-      // empty component root.
-      // skip all element-related modules except for ref (#3455)
+      // 如果组件根节点是空节点（比如 functional component 或注释节点）
+      // 则只执行 ref，并且不会执行 element 相关的模块
+
+      // 注册 ref（用于父组件通过 ref 获取子组件实例）
       registerRef(vnode)
-      // make sure to invoke the insert hook
+
+      // 仍然需要触发 insert 钩子，这样生命周期钩子才能运行（比如 mounted）
       insertedVnodeQueue.push(vnode)
     }
   }
