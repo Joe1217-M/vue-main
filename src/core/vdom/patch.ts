@@ -130,36 +130,43 @@ export function createPatchFunction(backend) {
 //  │    └─ 否 → 处理注释 or 文本
 //  └─ insert DOM
   function createElm(
-    vnode,
-    insertedVnodeQueue,
-    parentElm?: any,
-    refElm?: any,
-    nested?: any,
-    ownerArray?: any,
-    index?: any
+    vnode,                   // 当前虚拟节点
+    insertedVnodeQueue,      // 存放所有待插入的 vnode（组件或有 insert 钩子）
+    parentElm?: any,         // 父 DOM 节点
+    refElm?: any,            // 参考节点，用于 insertBefore
+    nested?: any,            // 是否递归创建的子节点
+    ownerArray?: any,        // 父 vnode 的 children 数组（如果 vnode 来自于数组）
+    index?: any              // vnode 在父 children 数组中的索引
   ) {
+    // ⚠️ 处理复用的 vnode
     if (isDef(vnode.elm) && isDef(ownerArray)) {
-      // This vnode was used in a previous render!
-      // now it's used as a new node, overwriting its elm would cause
-      // potential patch errors down the road when it's used as an insertion
-      // reference node. Instead, we clone the node on-demand before creating
-      // associated DOM element for it.
+      // 说明这个 vnode 在之前渲染中已经使用过
+      // 如果直接复用 elm 可能会导致 patch 错误
+      // 所以这里 clone 一个新的 vnode，避免覆盖 elm
       vnode = ownerArray[index] = cloneVNode(vnode)
     }
 
+    // 标记是否是根插入节点
+    // !nested → true 表示这是根节点（非递归子节点）
     vnode.isRootInsert = !nested // for transition enter check
+
+    // 如果 vnode 是组件，则先创建组件
     if (createComponent(vnode, insertedVnodeQueue, parentElm, refElm)) {
-      return
+      return // 组件创建完成，直接返回
     }
 
-    const data = vnode.data
-    const children = vnode.children
-    const tag = vnode.tag
+    const data = vnode.data           // vnode 的数据对象
+    const children = vnode.children   // vnode 的子节点
+    const tag = vnode.tag             // 标签名或组件名
+
     if (isDef(tag)) {
+      // vnode 是元素节点
       if (__DEV__) {
         if (data && data.pre) {
+          // 当前 vnode 在 v-pre 中，计数器加一
           creatingElmInVPre++
         }
+        // 开发环境下检查是否未知元素
         if (isUnknownElement(vnode, creatingElmInVPre)) {
           warn(
             'Unknown custom element: <' +
@@ -172,24 +179,33 @@ export function createPatchFunction(backend) {
         }
       }
 
+      // ✅ 创建真实 DOM
       vnode.elm = vnode.ns
-        ? nodeOps.createElementNS(vnode.ns, tag)
-        : nodeOps.createElement(tag, vnode)
-      setScope(vnode)
+        ? nodeOps.createElementNS(vnode.ns, tag) // 有命名空间（如 SVG）
+        : nodeOps.createElement(tag, vnode)      // 普通 HTML 元素
+      setScope(vnode)                             // 处理作用域 CSS
 
+      // 递归创建子节点
       createChildren(vnode, children, insertedVnodeQueue)
+
+      // 调用 vnode.data.hook.create 钩子
       if (isDef(data)) {
         invokeCreateHooks(vnode, insertedVnodeQueue)
       }
+
+      // 插入到父节点或参考节点之前
       insert(parentElm, vnode.elm, refElm)
 
+      // v-pre 结束，计数器减一
       if (__DEV__ && data && data.pre) {
         creatingElmInVPre--
       }
     } else if (isTrue(vnode.isComment)) {
+      // vnode 是注释节点
       vnode.elm = nodeOps.createComment(vnode.text)
       insert(parentElm, vnode.elm, refElm)
     } else {
+      // vnode 是文本节点
       vnode.elm = nodeOps.createTextNode(vnode.text)
       insert(parentElm, vnode.elm, refElm)
     }
@@ -278,23 +294,31 @@ export function createPatchFunction(backend) {
 
   function reactivateComponent(vnode, insertedVnodeQueue, parentElm, refElm) {
     let i
-    // hack for #4339: a reactivated component with inner transition
-    // does not trigger because the inner node's created hooks are not called
-    // again. It's not ideal to involve module-specific logic in here but
-    // there doesn't seem to be a better way to do it.
-    let innerNode = vnode
+    // #4339 issue 相关 hack：当 keep-alive 组件内部包含 transition 过渡动画时，
+    // 因为组件是从缓存取出的（不是重新创建），内部 vnode 的 created hook 不会再次触发，
+    // 导致过渡动画无法执行，所以这里手动触发 activate 钩子。
+
+    let innerNode = vnode  // 从当前 vnode 开始向内查找子组件(可能嵌套)
     while (innerNode.componentInstance) {
+      // 进入子组件的内部 vnode
       innerNode = innerNode.componentInstance._vnode
+
+      // 判断内部 vnode 是否包含 transition 数据
       if (isDef((i = innerNode.data)) && isDef((i = i.transition))) {
+        // 如果存在 transition 过渡，则调用 activate 钩子组
         for (i = 0; i < cbs.activate.length; ++i) {
-          cbs.activate[i](emptyNode, innerNode)
+          cbs.activate[i](emptyNode, innerNode)  // 执行 transition 的 activate 钩子
         }
+
+        // 将内部 vnode 推入插入队列，稍后调用 insert 钩子
         insertedVnodeQueue.push(innerNode)
-        break
+        break  // 找到一个 transition 节点后就退出循环
       }
     }
-    // unlike a newly created component,
-    // a reactivated keep-alive component doesn't insert itself
+
+    // 与全新创建的组件不同，
+    // 被 keep-alive 重新激活的组件不会自动插入 DOM，
+    // 因此需要手动插入 DOM
     insert(parentElm, vnode.elm, refElm)
   }
 
@@ -311,23 +335,34 @@ export function createPatchFunction(backend) {
   }
 
   function createChildren(vnode, children, insertedVnodeQueue) {
+    // 如果 children 是数组（即有多个子节点，例如 <div><span/><p/></div>）
     if (isArray(children)) {
+
+      // 开发环境下检查 v-for key 是否重复，避免 diff 过程中出现混乱
       if (__DEV__) {
         checkDuplicateKeys(children)
       }
+
+      // 遍历子节点，逐个创建并插入到父节点 vnode.elm 中
       for (let i = 0; i < children.length; ++i) {
         createElm(
-          children[i],
-          insertedVnodeQueue,
-          vnode.elm,
-          null,
-          true,
-          children,
-          i
+          children[i],             // 当前子 vnode
+          insertedVnodeQueue,      // 插入队列（用于后续执行 insert 钩子）
+          vnode.elm,               // 父节点真实 DOM（将创建后的 elm 插入这里）
+          null,                    // 不需要参考节点(refElm)
+          true,                    // nested: 标记嵌套 isRootInsert = true
+          children,                // 子 nodes 数组上下文
+          i                        // 当前索引
         )
       }
+
+    // 否则如果 vnode.text 是原始类型（string / number），表示是文本节点
     } else if (isPrimitive(vnode.text)) {
-      nodeOps.appendChild(vnode.elm, nodeOps.createTextNode(String(vnode.text)))
+      // 直接创建文本节点并挂载到 vnode.elm 下
+      nodeOps.appendChild(
+        vnode.elm,
+        nodeOps.createTextNode(String(vnode.text))
+      )
     }
   }
 
@@ -339,13 +374,19 @@ export function createPatchFunction(backend) {
   }
 
   function invokeCreateHooks(vnode, insertedVnodeQueue) {
+    // 1️⃣ 调用全局模块的 create 钩子（cbs.create 是 patch 初始化时收集的模块钩子集合）
+    //cbs.create 的钩子只是给 当前 vnode DOM 初始化“附加功能”
+    //    例如：attrs、class、style、events、domProps、directives、transition 等模块
     for (let i = 0; i < cbs.create.length; ++i) {
-      cbs.create[i](emptyNode, vnode)
+      cbs.create[i](emptyNode, vnode) // 第一个参数 emptyNode 表示旧节点为空（初次创建）
     }
-    i = vnode.data.hook // Reuse variable
-    if (isDef(i)) {
-      if (isDef(i.create)) i.create(emptyNode, vnode)
-      if (isDef(i.insert)) insertedVnodeQueue.push(vnode)
+
+    // 2️⃣ 调用 vnode 自身 data.hook 上定义的 create / insert 钩子
+    i = vnode.data.hook  // 重用变量 i
+
+    if (isDef(i)) { // vnode.data.hook 存在才执行
+      if (isDef(i.create)) i.create(emptyNode, vnode) // 执行 vnode 自己的 create 钩子
+      if (isDef(i.insert)) insertedVnodeQueue.push(vnode) // vnode 的 insert 钩子稍后统一执行
     }
   }
 
@@ -412,15 +453,19 @@ export function createPatchFunction(backend) {
   }
 
   function removeVnodes(vnodes, startIdx, endIdx) {
+    // 从 startIdx 遍历到 endIdx
     for (; startIdx <= endIdx; ++startIdx) {
-      const ch = vnodes[startIdx]
-      if (isDef(ch)) {
+      const ch = vnodes[startIdx]   // 当前 vnode
+
+      if (isDef(ch)) {   // ch 存在才删除
         if (isDef(ch.tag)) {
-          removeAndInvokeRemoveHook(ch)
-          invokeDestroyHook(ch)
+          // ch.tag 存在说明是元素节点（如 div、span、component）
+          // 组件或元素节点需要触发删除 & destroy 钩子
+          removeAndInvokeRemoveHook(ch) // 执行节点的 remove 钩子并从 DOM 中移除
+          invokeDestroyHook(ch)         // 执行 destroy 钩子（销毁组件、指令等）
         } else {
-          // Text node
-          removeNode(ch.elm)
+          // 没有 tag，说明是文本节点 (text node)
+          removeNode(ch.elm) // 直接删除 DOM text 节点
         }
       }
     }
