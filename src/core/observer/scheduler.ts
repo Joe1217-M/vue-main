@@ -144,11 +144,20 @@ function callUpdatedHooks(queue: Watcher[]) {
 /**
  * Queue a kept-alive component that was activated during patch.
  * The queue will be processed after the entire tree has been patched.
+ *
+ * 将一个在 patch（VNode 更新渲染）过程中被激活的 KeepAlive 组件加入激活队列
+ * 这些组件会在整棵 VNode 树 patch 完成后，统一执行 activated 钩子。
  */
 export function queueActivatedComponent(vm: Component) {
-  // setting _inactive to false here so that a render function can
-  // rely on checking whether it's in an inactive tree (e.g. router-view)
+  // 将组件的 _inactive 状态置为 false
+  // 表示该组件不再处于“未激活”状态（inactive）
+  // 这样 render 函数或 router-view 等内部逻辑可以依赖这个标记判断组件是否活跃
+  // 例如：<keep-alive> 内切换 <router-view> 时，判断组件该不该更新
   vm._inactive = false
+
+  // 将该实例推入 activatedChildren 队列
+  // 这个队列会在整个 patch 流程结束后调用 flushSchedulerQueue()
+  // 在 flushSchedulerQueue 中会统一执行 activated 钩子（vm.$emit("activated")）
   activatedChildren.push(vm)
 }
 
