@@ -61,12 +61,12 @@ export function createFnInvoker(
 }
 
 export function updateListeners(
-  on: Object,
-  oldOn: Object,
-  add: Function,
-  remove: Function,
-  createOnceHandler: Function,
-  vm: Component
+  on: Object,//新的事件对象（vnode.data.on）
+  oldOn: Object,//旧的事件对象
+  add: Function,//添加事件的方法（addEventListener 或 $on）
+  remove: Function,// 移除事件的方法
+  createOnceHandler: Function,// once 包装函数
+  vm: Component // 当前组件实例
 ) {
   let name, cur, old, event
   for (name in on) {

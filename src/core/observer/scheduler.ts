@@ -69,36 +69,53 @@ const sortCompareFn = (a: Watcher, b: Watcher): number => {
 }
 
 /**
- * Flush both queues and run the watchers.
+ * 执行并清空 watcher 队列
+ * 这是 Vue 2 异步更新的真正执行入口
  */
 function flushSchedulerQueue() {
+  // 记录本次 flush 的时间戳（用于事件时间比较、边界情况）
   currentFlushTimestamp = getNow()
+
+  // 标记当前正在执行 watcher 队列
   flushing = true
   let watcher, id
 
-  // Sort queue before flush.
-  // This ensures that:
-  // 1. Components are updated from parent to child. (because parent is always
-  //    created before the child)
-  // 2. A component's user watchers are run before its render watcher (because
-  //    user watchers are created before the render watcher)
-  // 3. If a component is destroyed during a parent component's watcher run,
-  //    its watchers can be skipped.
+  // 在执行前先对 watcher 队列排序
+  // 排序的目的非常关键：
+  // 1. 保证组件按 父 → 子 的顺序更新（父 watcher 创建得早，id 小）
+  // 2. 保证 user watcher 先于 render watcher 执行
+  // 3. 如果父组件执行过程中销毁了子组件，子组件 watcher 能被跳过
   queue.sort(sortCompareFn)
 
-  // do not cache length because more watchers might be pushed
-  // as we run existing watchers
+  // 注意：这里不能缓存 queue.length
+  // 因为在 watcher.run() 过程中可能会动态插入新的 watcher
   for (index = 0; index < queue.length; index++) {
     watcher = queue[index]
+
+    // 在 watcher 执行前调用 before 钩子
+    // 对应组件的 beforeUpdate 生命周期
     if (watcher.before) {
       watcher.before()
     }
+
+    // 当前 watcher 的唯一 id
     id = watcher.id
+
+    // 在真正执行前清除 has 标记
+    // 允许该 watcher 在下一轮更新中再次入队
     has[id] = null
+
+    // 执行 watcher：
+    // - render watcher 会触发 patch
+    // - user watcher 会执行用户定义的回调
     watcher.run()
-    // in dev build, check and stop circular updates.
+
+    // 开发环境下：检测无限更新循环
     if (__DEV__ && has[id] != null) {
+      // 同一个 watcher 在一次 flush 中被反复触发
       circular[id] = (circular[id] || 0) + 1
+
+      // 超过最大更新次数，认为是死循环，直接报警并终止
       if (circular[id] > MAX_UPDATE_COUNT) {
         warn(
           'You may have an infinite update loop ' +
@@ -112,18 +129,26 @@ function flushSchedulerQueue() {
     }
   }
 
-  // keep copies of post queues before resetting state
+  // 在重置调度器状态之前，拷贝当前队列
+  // 因为 resetSchedulerState 会清空原始数据
   const activatedQueue = activatedChildren.slice()
   const updatedQueue = queue.slice()
 
+  // 重置调度器状态：
+  // - 清空队列
+  // - 重置 index / has / waiting / flushing 等标记
   resetSchedulerState()
 
-  // call component updated and activated hooks
+  // 调用 keep-alive 组件的 activated 钩子
   callActivatedHooks(activatedQueue)
+
+  // 调用组件的 updated 生命周期钩子
   callUpdatedHooks(updatedQueue)
+
+  // 清理依赖收集过程中产生的无用依赖
   cleanupDeps()
 
-  // devtool hook
+  // 通知 Vue Devtools 本次 flush 已完成
   /* istanbul ignore if */
   if (devtools && config.devtools) {
     devtools.emit('flush')
@@ -142,9 +167,6 @@ function callUpdatedHooks(queue: Watcher[]) {
 }
 
 /**
- * Queue a kept-alive component that was activated during patch.
- * The queue will be processed after the entire tree has been patched.
- *
  * 将一个在 patch（VNode 更新渲染）过程中被激活的 KeepAlive 组件加入激活队列
  * 这些组件会在整棵 VNode 树 patch 完成后，统一执行 activated 钩子。
  */
@@ -169,40 +191,58 @@ function callActivatedHooks(queue) {
 }
 
 /**
- * Push a watcher into the watcher queue.
- * Jobs with duplicate IDs will be skipped unless it's
- * pushed when the queue is being flushed.
+ * 将 watcher 推入 watcher 队列
+ * 同一个 watcher（相同 id）在一次更新周期内只会入队一次
+ * 但如果是在 flush 过程中新增的 watcher，需要特殊插入
  */
 export function queueWatcher(watcher: Watcher) {
   const id = watcher.id
+
+  // 已经入队过的 watcher，直接跳过（去重）
   if (has[id] != null) {
     return
   }
 
+  // 防止 watcher 在执行过程中递归触发自己（如 computed / user watcher）
   if (watcher === Dep.target && watcher.noRecurse) {
     return
   }
 
+  // 标记该 watcher 已入队，用于去重
   has[id] = true
+
+  // 如果当前不在 flush（执行队列）阶段
   if (!flushing) {
+    // 直接 push 到队列尾部，等待统一执行
     queue.push(watcher)
   } else {
-    // if already flushing, splice the watcher based on its id
-    // if already past its id, it will be run next immediately.
+    // 如果正在 flush：
+    // 说明 watcher 是在执行过程中被触发的
+    // 需要插入到「还没执行的 watcher」之前，保证执行顺序
     let i = queue.length - 1
+
+    // 从队列尾部向前查找
+    // 保证新 watcher 的 id 大于已执行的 watcher
+    // 同时小于等于后续未执行的 watcher
     while (i > index && queue[i].id > watcher.id) {
       i--
     }
+
+    // 插入到合适位置，保证 watcher 按 id 递增执行
     queue.splice(i + 1, 0, watcher)
   }
-  // queue the flush
+
+  // 如果还没有安排 flush，则安排一次
   if (!waiting) {
     waiting = true
 
+    // 开发环境下，如果关闭 async，直接同步执行（方便调试）
     if (__DEV__ && !config.async) {
       flushSchedulerQueue()
       return
     }
+
+    // 正常情况：在 nextTick 中异步 flush watcher 队列
     nextTick(flushSchedulerQueue)
   }
 }
